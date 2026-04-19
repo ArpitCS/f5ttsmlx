@@ -157,8 +157,13 @@ public final class F5TTS {
 		let cappedTokenIDs = Array(tokenIDs.prefix(tokenLimit))
 		let tokenTensor = MLXArray(cappedTokenIDs, [1, cappedTokenIDs.count])
 
-		let styleAudio = try preprocessReferenceAudio(url: referenceAudioURL)
-		let styleEmbedding = styleEncoder.forward(audio: styleAudio)
+		let styleEmbedding: MLXArray
+		if config.enableVoiceMatching, let referenceAudioURL {
+			let styleAudio = try preprocessReferenceAudio(url: referenceAudioURL)
+			styleEmbedding = try styleEncoder.forward(audio: styleAudio)
+		} else {
+			styleEmbedding = MLXArray(Array(repeating: Float(0), count: 512), [1, 512])
+		}
 
 		let textFeatures = textEncoder.forward(tokens: tokenTensor)
 		let rawDurations = durationPredictor.forward(textFeatures: textFeatures)

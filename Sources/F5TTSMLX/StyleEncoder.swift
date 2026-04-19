@@ -2,6 +2,10 @@ import Foundation
 import MLX
 import MLXNN
 
+enum StyleEncoderError: Error {
+    case sequenceTooLong(Int)
+}
+
 // Internal style/reference encoder skeleton mapped to reference audio
 // conditioning in the Python f5-tts-mlx repository.
 struct StyleEncoder {
@@ -27,7 +31,7 @@ struct StyleEncoder {
             transformerHeads: 8,
             hiddenSize: 512,
             feedForwardMultiplier: 4,
-            maxPositionEmbeddings: 2_048
+            maxPositionEmbeddings: 16_384
         )
     }
 
@@ -129,7 +133,7 @@ struct StyleEncoder {
 
     // Expected input shape: [batch, samples] at 24kHz mono.
     // Returns a style embedding of shape [batch, hiddenSize].
-    func forward(audio: MLXArray) -> MLXArray {
+    func forward(audio: MLXArray) throws -> MLXArray {
         precondition(audio.ndim == 2, "audio must have shape [batch, samples]")
 
         var x = audio.expandedDimensions(axis: -1)
@@ -141,10 +145,9 @@ struct StyleEncoder {
         x = inputProjection(x)
 
         let sequenceLength = x.dim(1)
-        precondition(
-            sequenceLength <= config.maxPositionEmbeddings,
-            "Sequence length exceeds maxPositionEmbeddings for StyleEncoder"
-        )
+        guard sequenceLength <= config.maxPositionEmbeddings else {
+            throw StyleEncoderError.sequenceTooLong(sequenceLength)
+        }
 
         let positionIDs = MLXArray(0..<sequenceLength, [1, sequenceLength])
         x = x + positionEmbedding(positionIDs)
