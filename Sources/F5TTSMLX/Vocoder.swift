@@ -5,6 +5,8 @@ import MLXNN
 // Internal vocoder mapped to the Vocos stage used by the Python
 // f5-tts-mlx repository.
 struct Vocoder {
+    typealias ExternalWeights = [String: MLXArray]
+
     struct Configuration {
         var melBins: Int
         var hiddenSize: Int
@@ -53,6 +55,8 @@ struct Vocoder {
 
     let sampleRate: Int
     private let config: Configuration
+    private let parameterDType: DType
+    private let externalWeights: ExternalWeights
     private let inputProjection: Conv1d
     private let blocks: [ConvNeXt1DBlock]
     private let outputNorm: LayerNorm
@@ -60,12 +64,16 @@ struct Vocoder {
 
     init(
         sampleRate: Int = 24_000,
-        configuration: Configuration = .f5Approximation
+        configuration: Configuration = .f5Approximation,
+        parameterDType: DType = .float32,
+        externalWeights: ExternalWeights = [:]
     ) {
         precondition(sampleRate == 24_000, "Vocoder currently supports 24kHz output")
 
         self.sampleRate = sampleRate
         self.config = configuration
+        self.parameterDType = parameterDType
+        self.externalWeights = externalWeights
         self.inputProjection = Conv1d(
             inputChannels: configuration.melBins,
             outputChannels: configuration.hiddenSize,

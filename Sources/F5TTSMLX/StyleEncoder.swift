@@ -5,6 +5,8 @@ import MLXNN
 // Internal style/reference encoder skeleton mapped to reference audio
 // conditioning in the Python f5-tts-mlx repository.
 struct StyleEncoder {
+    typealias ExternalWeights = [String: MLXArray]
+
     struct Configuration {
         var sampleRate: Int
         var convChannels: [Int]
@@ -76,19 +78,27 @@ struct StyleEncoder {
     }
 
     private let config: Configuration
+    private let parameterDType: DType
+    private let externalWeights: ExternalWeights
     private let convBlocks: [ConvBlock]
     private let inputProjection: Linear
     private let positionEmbedding: Embedding
     private let transformerBlocks: [TransformerBlock]
     private let outputNorm: LayerNorm
 
-    init(config: Configuration = .f5Approximation) {
+    init(
+        config: Configuration = .f5Approximation,
+        parameterDType: DType = .float32,
+        externalWeights: ExternalWeights = [:]
+    ) {
         precondition(config.convChannels.count >= 2, "convChannels must include at least input and one output channel")
         precondition(config.convKernelSizes.count == config.convChannels.count - 1, "convKernelSizes count must match conv stage count")
         precondition(config.convStrides.count == config.convChannels.count - 1, "convStrides count must match conv stage count")
         precondition(config.hiddenSize % config.transformerHeads == 0, "hiddenSize must be divisible by transformerHeads")
 
         self.config = config
+        self.parameterDType = parameterDType
+        self.externalWeights = externalWeights
 
         self.convBlocks = (0..<(config.convChannels.count - 1)).map { index in
             ConvBlock(

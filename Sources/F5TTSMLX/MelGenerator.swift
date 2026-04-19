@@ -5,6 +5,8 @@ import MLXNN
 // Internal mel generator mapped to the flow-matching DiT mel generator in
 // the Python f5-tts-mlx repository.
 struct MelGenerator {
+    typealias ExternalWeights = [String: MLXArray]
+
     struct Configuration {
         var textHiddenSize: Int
         var styleHiddenSize: Int
@@ -53,6 +55,8 @@ struct MelGenerator {
     }
 
     private let config: Configuration
+    private let parameterDType: DType
+    private let externalWeights: ExternalWeights
     private let latentProjection: Linear
     private let textProjection: Linear
     private let styleProjection: Linear
@@ -62,13 +66,19 @@ struct MelGenerator {
     private let outputNorm: LayerNorm
     private let velocityHead: Linear
 
-    init(configuration: Configuration = .f5Approximation) {
+    init(
+        configuration: Configuration = .f5Approximation,
+        parameterDType: DType = .float32,
+        externalWeights: ExternalWeights = [:]
+    ) {
         precondition(
             configuration.modelSize % configuration.headCount == 0,
             "modelSize must be divisible by headCount"
         )
 
         self.config = configuration
+        self.parameterDType = parameterDType
+        self.externalWeights = externalWeights
         self.latentProjection = Linear(configuration.melBins, configuration.modelSize)
         self.textProjection = Linear(configuration.textHiddenSize, configuration.modelSize)
         self.styleProjection = Linear(configuration.styleHiddenSize, configuration.modelSize)

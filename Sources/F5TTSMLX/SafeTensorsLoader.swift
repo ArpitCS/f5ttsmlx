@@ -7,6 +7,12 @@ enum SafeTensorDType: String, Sendable {
     case float16 = "F16"
     case bfloat16 = "BF16"
     case float32 = "F32"
+    case int8 = "I8"
+    case uint8 = "U8"
+    case int16 = "I16"
+    case uint16 = "U16"
+    case int32 = "I32"
+    case uint32 = "U32"
 
     var byteWidth: Int {
         switch self {
@@ -14,6 +20,21 @@ enum SafeTensorDType: String, Sendable {
             return 2
         case .float32:
             return 4
+        case .int8, .uint8:
+            return 1
+        case .int16, .uint16:
+            return 2
+        case .int32, .uint32:
+            return 4
+        }
+    }
+
+    var isFloatingPoint: Bool {
+        switch self {
+        case .float16, .bfloat16, .float32:
+            return true
+        default:
+            return false
         }
     }
 }

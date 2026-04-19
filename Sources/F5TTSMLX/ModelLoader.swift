@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 
 // Internal model-loading scaffold for F5-TTS MLX weights.
 // This loader currently validates model layout and parses safetensors payloads,
@@ -8,6 +9,7 @@ enum ModelLoaderError: Error {
     case missingModelDirectory(URL)
     case missingRequiredFile(URL)
     case unsupportedModelSource(String)
+    case unsupportedTensorDType(String)
 }
 
 struct LoadedTensor: Sendable {
@@ -63,11 +65,22 @@ final class ModelLoader {
             ]
         )
 
+        let preferredFloatDType = preferredFloatingDType(from: textEncoderTensors)
+        let externalWeights = try loadMLXTensors(
+            from: modelLoader,
+            matchingPrefixes: [
+                "transformer.text_embed",
+                "text_embed",
+                "text_encoder",
+            ],
+            preferredFloatDType: preferredFloatDType
+        )
+
         // TODO: Map text-encoder tensor names from Python checkpoint to Swift
         // MLX parameter keys and instantiate model weights.
         let _ = textEncoderTensors
 
-        return TextEncoder()
+        return TextEncoder(parameterDType: preferredFloatDType, externalWeights: externalWeights)
     }
 
     func buildStyleEncoder() throws -> StyleEncoder {
@@ -80,11 +93,22 @@ final class ModelLoader {
             ]
         )
 
+        let preferredFloatDType = preferredFloatingDType(from: styleEncoderTensors)
+        let externalWeights = try loadMLXTensors(
+            from: modelLoader,
+            matchingPrefixes: [
+                "reference_encoder",
+                "style_encoder",
+                "cond",
+            ],
+            preferredFloatDType: preferredFloatDType
+        )
+
         // TODO: Define and map reference/style encoder checkpoint keys to MLX
         // parameters once the Swift StyleEncoder architecture is finalized.
         let _ = styleEncoderTensors
 
-        return StyleEncoder()
+        return StyleEncoder(parameterDType: preferredFloatDType, externalWeights: externalWeights)
     }
 
     func buildDurationPredictor(variant: DurationPredictor.Variant? = nil) throws -> DurationPredictor {
@@ -97,18 +121,32 @@ final class ModelLoader {
         }
 
         let chosenTensors: [LoadedTensor]
+        let chosenLoader: SafeTensorsLoader
         switch selectedVariant {
         case .original:
             chosenTensors = try loadTensors(from: durationModelLoader, matchingPrefixes: [])
+            chosenLoader = durationModelLoader
         case .v2:
             chosenTensors = try loadTensors(from: durationV2Loader, matchingPrefixes: [])
+            chosenLoader = durationV2Loader
         }
+
+        let preferredFloatDType = preferredFloatingDType(from: chosenTensors)
+        let externalWeights = try loadMLXTensors(
+            from: chosenLoader,
+            matchingPrefixes: [],
+            preferredFloatDType: preferredFloatDType
+        )
 
         // TODO: Map duration predictor tensors to Swift DurationPredictor MLX
         // modules and assign weights.
         let _ = chosenTensors
 
-        return DurationPredictor(variant: selectedVariant)
+        return DurationPredictor(
+            variant: selectedVariant,
+            parameterDType: preferredFloatDType,
+            externalWeights: externalWeights
+        )
     }
 
     func buildMelGenerator() throws -> MelGenerator {
@@ -122,11 +160,23 @@ final class ModelLoader {
             ]
         )
 
+        let preferredFloatDType = preferredFloatingDType(from: melGeneratorTensors)
+        let externalWeights = try loadMLXTensors(
+            from: modelLoader,
+            matchingPrefixes: [
+                "transformer",
+                "dit",
+                "time_mlp",
+                "to_pred",
+            ],
+            preferredFloatDType: preferredFloatDType
+        )
+
         // TODO: Map DiT / flow-matching mel generator tensor names into Swift
         // MelGenerator MLX layers.
         let _ = melGeneratorTensors
 
-        return MelGenerator()
+        return MelGenerator(parameterDType: preferredFloatDType, externalWeights: externalWeights)
     }
 
     func buildVocoder() throws -> Vocoder {
@@ -138,12 +188,22 @@ final class ModelLoader {
             ]
         )
 
+        let preferredFloatDType = preferredFloatingDType(from: vocoderTensors)
+        let externalWeights = try loadMLXTensors(
+            from: modelLoader,
+            matchingPrefixes: [
+                "vocoder",
+                "vocos",
+            ],
+            preferredFloatDType: preferredFloatDType
+        )
+
         // TODO: If vocoder weights are colocated in this model directory, map
         // those keys to Swift Vocoder parameters. If not, fetch external Vocos
         // weights and populate from that source.
         let _ = vocoderTensors
 
-        return Vocoder(sampleRate: 24_000)
+        return Vocoder(sampleRate: 24_000, parameterDType: preferredFloatDType, externalWeights: externalWeights)
     }
 
     func makeTokenizer() throws -> Tokenizer {
@@ -177,6 +237,64 @@ final class ModelLoader {
             let tensor = try loader.loadTensor(named: name)
             return LoadedTensor(name: name, shape: tensor.shape, dtype: tensor.dtype, data: tensor.data)
         }
+    }
+
+    private func loadMLXTensors(
+        from loader: SafeTensorsLoader,
+        matchingPrefixes prefixes: [String],
+        preferredFloatDType: DType
+    ) throws -> [String: MLXArray] {
+        let loaded = try loadTensors(from: loader, matchingPrefixes: prefixes)
+        var tensors: [String: MLXArray] = [:]
+        tensors.reserveCapacity(loaded.count)
+
+        for tensor in loaded {
+            let mlxArray = try mlxArray(from: tensor, preferredFloatDType: preferredFloatDType)
+            tensors[tensor.name] = mlxArray
+        }
+
+        return tensors
+    }
+
+    private func mlxArray(from tensor: LoadedTensor, preferredFloatDType: DType) throws -> MLXArray {
+        let mlxDType: DType
+        switch tensor.dtype {
+        case .float16:
+            mlxDType = .float16
+        case .bfloat16:
+            mlxDType = .bfloat16
+        case .float32:
+            mlxDType = .float32
+        case .int8:
+            mlxDType = .int8
+        case .uint8:
+            mlxDType = .uint8
+        case .int16:
+            mlxDType = .int16
+        case .uint16:
+            mlxDType = .uint16
+        case .int32:
+            mlxDType = .int32
+        case .uint32:
+            mlxDType = .uint32
+        }
+
+        let base = MLXArray(tensor.data, tensor.shape, dtype: mlxDType)
+        if tensor.dtype.isFloatingPoint {
+            return base.asType(preferredFloatDType)
+        }
+        return base
+    }
+
+    private func preferredFloatingDType(from tensors: [LoadedTensor]) -> DType {
+        // Quantized checkpoints typically keep runtime weights in BF16.
+        if tensors.contains(where: { $0.dtype == .bfloat16 }) {
+            return .bfloat16
+        }
+        if tensors.contains(where: { $0.dtype == .float16 }) {
+            return .float16
+        }
+        return .float32
     }
 
     private static func assertFileExists(at url: URL) throws {

@@ -5,6 +5,8 @@ import MLXNN
 // Internal duration predictor skeleton mapped to the duration predictor module
 // in the Python f5-tts-mlx repository.
 struct DurationPredictor {
+    typealias ExternalWeights = [String: MLXArray]
+
     enum Variant: String, Sendable {
         case original
         case v2
@@ -83,19 +85,28 @@ struct DurationPredictor {
 
     let variant: Variant
     private let config: Configuration
+    private let parameterDType: DType
+    private let externalWeights: ExternalWeights
     private let inputProjection: Linear
     private let positionEmbedding: Embedding
     private let blocks: [TransformerBlock]
     private let outputNorm: LayerNorm
     private let durationHead: Linear
 
-    init(variant: Variant = .v2, configuration: Configuration? = nil) {
+    init(
+        variant: Variant = .v2,
+        configuration: Configuration? = nil,
+        parameterDType: DType = .float32,
+        externalWeights: ExternalWeights = [:]
+    ) {
         let config = configuration ?? .default(for: variant)
 
         precondition(config.modelSize % config.headCount == 0, "modelSize must be divisible by headCount")
 
         self.variant = variant
         self.config = config
+        self.parameterDType = parameterDType
+        self.externalWeights = externalWeights
         self.inputProjection = Linear(config.inputFeatureSize, config.modelSize)
         self.positionEmbedding = Embedding(
             embeddingCount: config.maxPositionEmbeddings,

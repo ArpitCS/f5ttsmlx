@@ -5,6 +5,8 @@ import MLXNN
 // Internal text encoder skeleton mapped to the text-conditioning module in
 // the Python f5-tts-mlx repository.
 struct TextEncoder {
+    typealias ExternalWeights = [String: MLXArray]
+
     struct Configuration {
         var vocabularySize: Int
         var hiddenSize: Int
@@ -49,13 +51,21 @@ struct TextEncoder {
     }
 
     private let config: Configuration
+    private let parameterDType: DType
+    private let externalWeights: ExternalWeights
     private let tokenEmbedding: Embedding
     private let positionEmbedding: Embedding
     private let blocks: [TransformerBlock]
     private let finalNorm: LayerNorm
 
-    init(config: Configuration = .f5Approximation) {
+    init(
+        config: Configuration = .f5Approximation,
+        parameterDType: DType = .float32,
+        externalWeights: ExternalWeights = [:]
+    ) {
         self.config = config
+        self.parameterDType = parameterDType
+        self.externalWeights = externalWeights
         self.tokenEmbedding = Embedding(
             embeddingCount: config.vocabularySize,
             dimensions: config.hiddenSize
