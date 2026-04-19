@@ -7,16 +7,22 @@ struct F5TTSMLXSampleMain {
         do {
             let args = CommandLine.arguments
             guard args.count >= 3 else {
-                print("Usage: swift run F5TTSMLXSample <model-directory> <output.wav> [text]")
+                print("Usage: swift run F5TTSMLXSample <hf:repo-id OR /local/path> <output.wav> [text]")
                 return
             }
 
-            let modelDirectory = URL(fileURLWithPath: args[1], isDirectory: true)
+            let source: F5TTSConfig.ModelSource
+            if args[1].hasPrefix("hf:") {
+                source = .huggingFace(repoId: String(args[1].dropFirst(3)))
+            } else {
+                source = .localDirectory(URL(fileURLWithPath: args[1], isDirectory: true))
+            }
+
             let outputURL = URL(fileURLWithPath: args[2], isDirectory: false)
             let text = args.count > 3 ? args[3] : "Hello from F5TTSMLX"
 
             let config = F5TTSConfig(
-                modelSource: .localDirectory(modelDirectory),
+                modelSource: source,
                 maxLength: 64,
                 temperature: 0.8,
                 seed: 42,
