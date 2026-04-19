@@ -1,4 +1,12 @@
 import Foundation
+@preconcurrency import AVFoundation
+import MLX
+
+enum F5TTSRuntimeError: Error {
+	case emptyInputText
+	case audioLoadFailed(URL)
+	case audioConversionFailed(URL)
+}
 
 /// Configuration for creating an ``F5TTS`` instance.
 ///
@@ -84,6 +92,18 @@ public struct AudioResult: Sendable {
 public final class F5TTS {
 	/// Configuration captured at initialization time.
 	public let config: F5TTSConfig
+	private let modelDirectory: URL
+	private let tokenizer: Tokenizer
+	private let modelLoader: ModelLoader
+	private let textEncoder: TextEncoder
+	private let styleEncoder: StyleEncoder
+	private let durationPredictor: DurationPredictor
+	private let melGenerator: MelGenerator
+	private let vocoder: Vocoder
+
+	private static let modelSampleRate = 24_000
+	private static let minReferenceSeconds: Double = 5.0
+	private static let maxReferenceSeconds: Double = 10.0
 
 	/// Creates and asynchronously prepares a synthesizer instance.
 	///
@@ -91,8 +111,19 @@ public final class F5TTS {
 	/// future implementations.
 	///
 	/// - Parameter config: User-provided synthesizer configuration.
-	public init(config: F5TTSConfig) async {
+	public init(config: F5TTSConfig) async throws {
 		self.config = config
+		self.modelDirectory = try await resolveModelDirectory(from: config)
+
+		let loader = try ModelLoader(rootURL: modelDirectory)
+		self.modelLoader = loader
+		self.tokenizer = try loader.makeTokenizer()
+
+		self.textEncoder = try loader.buildTextEncoder()
+		self.styleEncoder = try loader.buildStyleEncoder()
+		self.durationPredictor = try loader.buildDurationPredictor(variant: .v2)
+		self.melGenerator = try loader.buildMelGenerator()
+		self.vocoder = try loader.buildVocoder()
 	}
 
 	// Initializes a tokenizer from a resolved model directory that contains
@@ -115,11 +146,148 @@ public final class F5TTS {
 		referenceAudioURL: URL? = nil,
 		referenceText: String? = nil
 	) async throws -> AudioResult {
-		let _ = (text, referenceAudioURL, referenceText)
-		throw NSError(
-			domain: "F5TTSMLX",
-			code: 1,
-			userInfo: [NSLocalizedDescriptionKey: "synthesize(_:referenceAudioURL:referenceText:) is not implemented yet."]
+		let _ = referenceText
+
+		let tokenIDs = tokenizer.tokenize(text)
+		guard !tokenIDs.isEmpty else {
+			throw F5TTSRuntimeError.emptyInputText
+		}
+
+		let tokenLimit = max(1, config.maxLength)
+		let cappedTokenIDs = Array(tokenIDs.prefix(tokenLimit))
+		let tokenTensor = MLXArray(cappedTokenIDs, [1, cappedTokenIDs.count])
+
+		let styleAudio = try preprocessReferenceAudio(url: referenceAudioURL)
+		let styleEmbedding = styleEncoder.forward(audio: styleAudio)
+
+		let textFeatures = textEncoder.forward(tokens: tokenTensor)
+		let rawDurations = durationPredictor.forward(textFeatures: textFeatures)
+		let durations = sanitizeDurations(rawDurations, tokenCount: cappedTokenIDs.count)
+
+		let maxSteps = max(16, min(128, config.maxLength))
+		let mels = melGenerator.generateMels(
+			textFeatures: textFeatures,
+			styleEmbedding: styleEmbedding,
+			durations: durations,
+			maxSteps: maxSteps,
+			temperature: config.temperature,
+			seed: config.seed
 		)
+
+		let waveform = vocoder.generateAudio(from: mels)
+		let samples = waveform.reshaped([-1]).asArray(Float.self)
+
+		return AudioResult(sampleRate: Self.modelSampleRate, samples: samples)
+	}
+
+	private func sanitizeDurations(_ raw: MLXArray, tokenCount: Int) -> MLXArray {
+		let rawValues = raw.reshaped([-1]).asArray(Float.self)
+		let clipped = Array(rawValues.prefix(tokenCount)).map { value -> Float in
+			if value.isFinite {
+				return min(Float(config.maxLength), max(1.0, value))
+			}
+			return 1.0
+		}
+
+		let total = clipped.reduce(Float(0), +)
+		let maxFrames = Float(max(1, config.maxLength))
+		let normalized: [Float]
+		if total > maxFrames {
+			let scale = maxFrames / total
+			normalized = clipped.map { max(1.0, $0 * scale) }
+		} else {
+			normalized = clipped
+		}
+
+		return MLXArray(normalized, [1, tokenCount])
+	}
+
+	private func preprocessReferenceAudio(url: URL?) throws -> MLXArray {
+		let minSamples = Int(Double(Self.modelSampleRate) * Self.minReferenceSeconds)
+		let maxSamples = Int(Double(Self.modelSampleRate) * Self.maxReferenceSeconds)
+
+		if let url {
+			let mono24k = try loadResampledMonoAudio(url: url, sampleRate: Double(Self.modelSampleRate))
+			let clamped = clampSampleCount(mono24k, minSamples: minSamples, maxSamples: maxSamples)
+			return MLXArray(clamped, [1, clamped.count])
+		}
+
+		let silence = Array(repeating: Float(0), count: minSamples)
+		return MLXArray(silence, [1, silence.count])
+	}
+
+	private func clampSampleCount(_ samples: [Float], minSamples: Int, maxSamples: Int) -> [Float] {
+		if samples.count > maxSamples {
+			return Array(samples.prefix(maxSamples))
+		}
+
+		if samples.count < minSamples {
+			var padded = samples
+			padded.append(contentsOf: Array(repeating: Float(0), count: minSamples - samples.count))
+			return padded
+		}
+
+		return samples
+	}
+
+	private func loadResampledMonoAudio(url: URL, sampleRate: Double) throws -> [Float] {
+		do {
+			let file = try AVAudioFile(forReading: url)
+			let sourceFormat = file.processingFormat
+
+			guard let targetFormat = AVAudioFormat(
+				commonFormat: .pcmFormatFloat32,
+				sampleRate: sampleRate,
+				channels: 1,
+				interleaved: false
+			) else {
+				throw F5TTSRuntimeError.audioConversionFailed(url)
+			}
+
+			guard let sourceBuffer = AVAudioPCMBuffer(
+				pcmFormat: sourceFormat,
+				frameCapacity: AVAudioFrameCount(file.length)
+			) else {
+				throw F5TTSRuntimeError.audioLoadFailed(url)
+			}
+
+			try file.read(into: sourceBuffer)
+
+			guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+				throw F5TTSRuntimeError.audioConversionFailed(url)
+			}
+
+			let ratio = targetFormat.sampleRate / sourceFormat.sampleRate
+			let estimatedFrames = max(1, Int(Double(sourceBuffer.frameLength) * ratio) + 1_024)
+			guard let targetBuffer = AVAudioPCMBuffer(
+				pcmFormat: targetFormat,
+				frameCapacity: AVAudioFrameCount(estimatedFrames)
+			) else {
+				throw F5TTSRuntimeError.audioConversionFailed(url)
+			}
+
+			do {
+				try converter.convert(to: targetBuffer, from: sourceBuffer)
+			} catch {
+				throw F5TTSRuntimeError.audioConversionFailed(url)
+			}
+
+			guard let channelData = targetBuffer.floatChannelData else {
+				throw F5TTSRuntimeError.audioConversionFailed(url)
+			}
+
+			let count = Int(targetBuffer.frameLength)
+			if count == 0 {
+				return []
+			}
+
+			let mono = UnsafeBufferPointer(start: channelData[0], count: count)
+			return Array(mono)
+		} catch {
+			if error is F5TTSRuntimeError {
+				throw error
+			}
+			throw F5TTSRuntimeError.audioLoadFailed(url)
+		}
 	}
 }
