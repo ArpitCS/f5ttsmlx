@@ -87,21 +87,28 @@ final class ModelLoader {
         return StyleEncoder()
     }
 
-    func buildDurationPredictor() throws -> DurationPredictor {
-        // Prefer v2 duration checkpoint, fallback to legacy naming if needed.
-        let v2Tensors = try loadTensors(from: durationV2Loader, matchingPrefixes: [])
-        let chosenTensors: [LoadedTensor]
-        if v2Tensors.isEmpty {
-            chosenTensors = try loadTensors(from: durationModelLoader, matchingPrefixes: [])
+    func buildDurationPredictor(variant: DurationPredictor.Variant? = nil) throws -> DurationPredictor {
+        // Prefer v2 by default but allow explicit variant override.
+        let selectedVariant: DurationPredictor.Variant
+        if let variant {
+            selectedVariant = variant
         } else {
-            chosenTensors = v2Tensors
+            selectedVariant = durationV2Loader.tensorNames.isEmpty ? .original : .v2
+        }
+
+        let chosenTensors: [LoadedTensor]
+        switch selectedVariant {
+        case .original:
+            chosenTensors = try loadTensors(from: durationModelLoader, matchingPrefixes: [])
+        case .v2:
+            chosenTensors = try loadTensors(from: durationV2Loader, matchingPrefixes: [])
         }
 
         // TODO: Map duration predictor tensors to Swift DurationPredictor MLX
         // modules and assign weights.
         let _ = chosenTensors
 
-        return DurationPredictor()
+        return DurationPredictor(variant: selectedVariant)
     }
 
     func buildMelGenerator() throws -> MelGenerator {
