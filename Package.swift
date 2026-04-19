@@ -17,6 +17,10 @@ let package = Package(
             name: "F5TTSMLX",
             targets: ["F5TTSMLX"]
         ),
+        .executable(
+            name: "F5TTSMLXSample",
+            targets: ["F5TTSMLXSample"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.31.0")
@@ -30,6 +34,14 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
             ]
+        ),
+        .executableTarget(
+            name: "F5TTSMLXSample",
+            dependencies: ["F5TTSMLX"]
+        ),
+        .testTarget(
+            name: "F5TTSMLXTests",
+            dependencies: ["F5TTSMLX"]
         ),
 
     ],

@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:F5TTSMLX}",
+            "name": "Debug F5TTSMLXSample",
+            "target": "F5TTSMLXSample",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug F5TTSMLXSample"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:F5TTSMLX}",
+            "name": "Release F5TTSMLXSample",
+            "target": "F5TTSMLXSample",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release F5TTSMLXSample"
+        }
+    ]
+}
