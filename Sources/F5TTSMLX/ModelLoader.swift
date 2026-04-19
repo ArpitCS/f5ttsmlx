@@ -16,6 +16,7 @@ enum ModelLoaderError: Error {
     case missingModelDirectory(URL)
     case missingRequiredFile(URL)
     case unsupportedModelSource(String)
+    case downloadFailed(URL, Error)
     case unsupportedTensorDType(String)
 }
 
@@ -326,13 +327,79 @@ func resolveModelDirectory(from config: F5TTSConfig) async throws -> URL {
         return url
 
     case let .huggingFace(repoId):
-        // TODO: Download or reuse cached Hugging Face model artifacts and return
-        // the local directory path containing model.safetensors files + vocab.
-        // Future: support both pre-quantized repos (e.g. alandao/f5-tts-mlx-4bit)
-        // and full-precision lucasnewman/f5-tts-mlx repos, with optional
-        // on-device q=4 quantization (Linear layers where input dim % 64 == 0).
-        throw ModelLoaderError.unsupportedModelSource(
-            "Hugging Face source not implemented yet for repo: \(repoId)"
-        )
+        let fileManager = FileManager.default
+        let requiredFiles = [
+            ModelLoader.modelFileName,
+            ModelLoader.durationModelFileName,
+            ModelLoader.durationV2FileName,
+            ModelLoader.vocabularyFileName,
+        ]
+        let safeRepoId = repoId.replacingOccurrences(of: "/", with: "_")
+
+        #if os(macOS)
+        let baseCacheDir = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("f5ttsmlx", isDirectory: true)
+        #else
+        let baseCacheDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("f5ttsmlx", isDirectory: true)
+        #endif
+
+        let cacheDir = baseCacheDir.appendingPathComponent(safeRepoId, isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        } catch {
+            throw ModelLoaderError.downloadFailed(cacheDir, error)
+        }
+
+        let hasAllRequiredFiles = requiredFiles.allSatisfy { fileName in
+            let destinationURL = cacheDir.appendingPathComponent(fileName, isDirectory: false)
+            return fileManager.fileExists(atPath: destinationURL.path)
+        }
+        if hasAllRequiredFiles {
+            return cacheDir
+        }
+
+        print("[F5TTSMLX] Downloading model from \(repoId)...")
+
+        for fileName in requiredFiles {
+            let destinationURL = cacheDir.appendingPathComponent(fileName, isDirectory: false)
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                continue
+            }
+
+            print("[F5TTSMLX] Downloading \(fileName)...")
+
+            let remoteURLString = "https://huggingface.co/\(repoId)/resolve/main/\(fileName)"
+            guard let remoteURL = URL(string: remoteURLString) else {
+                let invalidURLError = URLError(.badURL)
+                throw ModelLoaderError.downloadFailed(destinationURL, invalidURLError)
+            }
+
+            let temporaryFileURL: URL
+            do {
+                let (downloadedURL, response) = try await URLSession.shared.download(from: remoteURL)
+                if let httpResponse = response as? HTTPURLResponse,
+                   !(200...299).contains(httpResponse.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                temporaryFileURL = downloadedURL
+            } catch {
+                throw ModelLoaderError.downloadFailed(remoteURL, error)
+            }
+
+            do {
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                try fileManager.moveItem(at: temporaryFileURL, to: destinationURL)
+            } catch {
+                throw ModelLoaderError.downloadFailed(destinationURL, error)
+            }
+        }
+
+        print("[F5TTSMLX] Model ready at \(cacheDir.path)")
+        return cacheDir
     }
 }
