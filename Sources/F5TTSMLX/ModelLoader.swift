@@ -4,6 +4,13 @@ import MLX
 // Internal model-loading scaffold for F5-TTS MLX weights.
 // This loader currently validates model layout and parses safetensors payloads,
 // but defers MLX parameter materialization to future work.
+//
+// Future enhancement note:
+// Add a full-precision loading mode for lucasnewman/f5-tts-mlx checkpoints and
+// apply quantization on-device in Swift (Python --q 4 parity). The intended
+// predicate should quantize only Linear layers whose input dimension is
+// divisible by 64. This is documentation-only for now; no on-device
+// quantization logic is implemented in this file yet.
 
 enum ModelLoaderError: Error {
     case missingModelDirectory(URL)
@@ -244,6 +251,9 @@ final class ModelLoader {
         matchingPrefixes prefixes: [String],
         preferredFloatDType: DType
     ) throws -> [String: MLXArray] {
+        // Today this materializes tensors exactly as stored in safetensors.
+        // Future mode: when loading full-precision checkpoints, run an
+        // on-device quantization pass here before returning arrays (q=4 parity).
         let loaded = try loadTensors(from: loader, matchingPrefixes: prefixes)
         var tensors: [String: MLXArray] = [:]
         tensors.reserveCapacity(loaded.count)
@@ -288,6 +298,8 @@ final class ModelLoader {
 
     private func preferredFloatingDType(from tensors: [LoadedTensor]) -> DType {
         // Quantized checkpoints typically keep runtime weights in BF16.
+        // Future full-precision mode may select a pre-quantization source dtype
+        // here, then quantize only eligible Linear layers (in-dim % 64 == 0).
         if tensors.contains(where: { $0.dtype == .bfloat16 }) {
             return .bfloat16
         }
@@ -316,6 +328,9 @@ func resolveModelDirectory(from config: F5TTSConfig) async throws -> URL {
     case let .huggingFace(repoId):
         // TODO: Download or reuse cached Hugging Face model artifacts and return
         // the local directory path containing model.safetensors files + vocab.
+        // Future: support both pre-quantized repos (e.g. alandao/f5-tts-mlx-4bit)
+        // and full-precision lucasnewman/f5-tts-mlx repos, with optional
+        // on-device q=4 quantization (Linear layers where input dim % 64 == 0).
         throw ModelLoaderError.unsupportedModelSource(
             "Hugging Face source not implemented yet for repo: \(repoId)"
         )

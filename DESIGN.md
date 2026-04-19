@@ -74,6 +74,28 @@ Design expectations:
 - Keep quantization handling isolated in `ModelIO` and weight-loading paths.
 - Preserve a fallback path for non-quantized checkpoints where possible.
 
+## TODO: On-Device Quantization Mode (Future)
+
+Planned enhancement: support loading full-precision checkpoints from the main
+`lucasnewman/f5-tts-mlx` Hugging Face model and applying quantization on-device
+in Swift, mirroring Python CLI behavior with `--q 4`.
+
+Scope for future implementation:
+
+1. Add a model-loading mode that starts from full-precision safetensors instead
+of pre-quantized `alandao/f5-tts-mlx-4bit` artifacts.
+2. Apply MLX Swift quantization at load time using a class predicate equivalent
+to Python behavior: quantize only `Linear` layers whose input dimension is
+divisible by 64.
+3. Keep quantization orchestration in `ModelIO`/loader paths so module forward
+logic remains unchanged.
+4. Preserve the current pre-quantized fast path as the default behavior.
+
+Non-goals for current revision:
+
+- No on-device quantization logic is implemented yet.
+- No runtime switch is exposed yet for selecting full-precision + quantize mode.
+
 ## Data and Artifact Contract
 
 A compatible model bundle should include:
