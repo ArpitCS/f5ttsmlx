@@ -95,6 +95,12 @@ public final class F5TTS {
 		self.config = config
 	}
 
+	// Initializes a tokenizer from a resolved model directory that contains
+	// vocab.txt (for example, alandao/f5-tts-mlx-4bit after download).
+	func makeTokenizer(resolvedModelDirectory: URL) throws -> Tokenizer {
+		try Tokenizer(modelDirectory: resolvedModelDirectory)
+	}
+
 	/// Synthesizes speech audio for the provided text.
 	///
 	/// This is a stub and currently throws an unimplemented error.
